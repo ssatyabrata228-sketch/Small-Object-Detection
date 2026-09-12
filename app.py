@@ -1,9 +1,28 @@
 # ---------------- IMPORTS ----------------
 import sys
-sys.path.append("C:/Users/sahoo/CFINet")
+import os
+
+# ---------------- PROJECT PATHS ----------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CFINET_DIR = os.path.join(BASE_DIR, "cfinet")
+CFINET_CONFIG = os.path.join(
+    CFINET_DIR,
+    "configs",
+    "cfinet",
+    "faster_rcnn_r50_fpn_cfinet_1x.py"
+)
+CFINET_CHECKPOINT = os.path.join(
+    BASE_DIR,
+    "models",
+    "cfinet",
+    "latest.pth"
+)
+
+# Allow Python to find the local CFINet/MMDetection code
+sys.path.insert(0, CFINET_DIR)
+
 import pandas as pd
 
-import os
 import json
 import streamlit as st
 import cv2
@@ -77,12 +96,20 @@ def hybrid_merge(boxes1, boxes2):
 # ---------------- LOAD MODELS ----------------
 def load_cfinet():
     if st.session_state.cfinet_model is None:
-        st.session_state.cfinet_model = init_detector(
-            "C:/Users/sahoo/CFINet/configs/cfinet/faster_rcnn_r50_fpn_cfinet_1x.py",
-            "C:/Users/sahoo/CFINet/work_dirs/cfinet/latest.pth",
-            device='cuda:0'
-        )
 
+        if not os.path.exists(CFINET_CONFIG):
+            st.error(f"CFINet config not found: {CFINET_CONFIG}")
+            st.stop()
+
+        if not os.path.exists(CFINET_CHECKPOINT):
+            st.error(f"CFINet checkpoint not found: {CFINET_CHECKPOINT}")
+            st.stop()
+
+        st.session_state.cfinet_model = init_detector(
+            CFINET_CONFIG,
+            CFINET_CHECKPOINT,
+            device="cuda:0"
+        )
 # ---------------- LOGIN ----------------
 def login_page():
     st.markdown("""
@@ -144,7 +171,10 @@ def login_page():
         st.markdown("<br>", unsafe_allow_html=True)
 
         if st.button("Login"):
-            if username == "admin" and password == "admin123":
+            correct_username = os.getenv("VISIONAI_USERNAME", "admin")
+            correct_password = os.getenv("VISIONAI_PASSWORD", "change-me")
+
+            if username == correct_username and password == correct_password:
                 st.session_state.logged_in = True
                 st.success("Login successful")
                 st.rerun()
