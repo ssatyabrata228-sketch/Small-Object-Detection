@@ -129,3 +129,6 @@ cfinet/demo/MMDet_InstanceSeg_Tutorial.ipynb
 cfinet/demo/MMDet_Tutorial.ipynb
 esod/evaluation/UAV-benchmark-MOTD_v1.0/GT.zip
 "@ | Set-Content .gitignore
+# Generated detection outputs
+output.jpg
+temp.bbox.json
