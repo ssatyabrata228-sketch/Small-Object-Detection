@@ -1,6 +1,7 @@
 # ---------------- IMPORTS ----------------
-import sys
+import json
 import os
+import sys
 
 # ---------------- PROJECT PATHS ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,15 +22,13 @@ CFINET_CHECKPOINT = os.path.join(
 # Allow Python to find the local CFINet/MMDetection code
 sys.path.insert(0, CFINET_DIR)
 
-import pandas as pd
-
-import json
-import streamlit as st
+# ---------------- THIRD-PARTY IMPORTS ----------------
 import cv2
-import tempfile
 import numpy as np
+import pandas as pd
+import streamlit as st
+import torch
 from PIL import Image
-
 from ultralytics import YOLO
 from mmdet.apis import init_detector, inference_detector
 
@@ -47,7 +46,8 @@ if "logged_in" not in st.session_state:
 if "cfinet_model" not in st.session_state:
     st.session_state.cfinet_model = None
 
-os.makedirs("work_dirs/roi_feats/cfinet", exist_ok=True)
+WORK_DIR = os.path.join(BASE_DIR, "work_dirs", "roi_feats", "cfinet")
+os.makedirs(WORK_DIR, exist_ok=True)
 
 # ---------------- IOU ----------------
 def compute_iou(box1, box2):
@@ -72,26 +72,33 @@ def filter_new(old_boxes, new_boxes):
     return out
 # ---------------- HYBRID MERGE ----------------
 def hybrid_merge(boxes1, boxes2):
-            final = []
-            duplicates = []
+    final = []
+    duplicates = []
 
-            for box in boxes1 + boxes2:
-                keep = True
-                for f in final:
-                    if compute_iou(box["bbox"], f["bbox"]) > 0.5:
-                        if box["confidence"] <= f["confidence"]:
-                            duplicates.append(box)
-                            keep = False
-                            break
-                        else:
-                            duplicates.append(f)
-                            final.remove(f)
-                            break
+    for box in boxes1 + boxes2:
+        overlapping = []
 
-                if keep:
-                    final.append(box)
+        for existing in final:
+            if compute_iou(box["bbox"], existing["bbox"]) > 0.5:
+                overlapping.append(existing)
 
-            return final, duplicates   # ✅ FIXED
+        if not overlapping:
+            final.append(box)
+            continue
+
+        best_existing = max(
+            overlapping,
+            key=lambda item: item["confidence"]
+        )
+
+        if box["confidence"] > best_existing["confidence"]:
+            final.remove(best_existing)
+            duplicates.append(best_existing)
+            final.append(box)
+        else:
+            duplicates.append(box)
+
+    return final, duplicates
 
 # ---------------- LOAD MODELS ----------------
 def load_cfinet():
@@ -108,8 +115,11 @@ def load_cfinet():
         st.session_state.cfinet_model = init_detector(
             CFINET_CONFIG,
             CFINET_CHECKPOINT,
-            device="cuda:0"
+            device="cuda:0" if torch.cuda.is_available() else "cpu"
         )
+@st.cache_resource
+def load_yolo(model_path):
+    return YOLO(model_path)
 # ---------------- LOGIN ----------------
 def login_page():
     st.markdown("""
@@ -163,7 +173,7 @@ def login_page():
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("<h3 style='text-align:center;'>🔐 Secure Login</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align:center;'> Secure Login</h3>", unsafe_allow_html=True)
 
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
@@ -171,8 +181,13 @@ def login_page():
         st.markdown("<br>", unsafe_allow_html=True)
 
         if st.button("Login"):
-            correct_username = os.getenv("VISIONAI_USERNAME", "admin")
-            correct_password = os.getenv("VISIONAI_PASSWORD", "change-me")
+            correct_username = os.getenv("VISIONAI_USERNAME")
+            correct_password = os.getenv("VISIONAI_PASSWORD")
+
+            if not correct_username or not correct_password:
+                st.error("Login credentials are not configured.")
+                st.info("Set VISIONAI_USERNAME and VISIONAI_PASSWORD before starting the application.")
+                st.stop()
 
             if username == correct_username and password == correct_password:
                 st.session_state.logged_in = True
@@ -198,7 +213,7 @@ st.markdown(
 st.markdown("""
 <style>
 
-/* 🌈 MAIN BACKGROUND (YOUR GRADIENT) */
+/*  MAIN BACKGROUND (YOUR GRADIENT) */
 .stApp {
     background: radial-gradient(circle, rgba(238,174,202,1) 0%, rgba(148,187,233,1) 81%);
 }
@@ -290,7 +305,7 @@ def detection_page():
         json_A = []
 
         if model1 != "CFINet":
-            m1 = YOLO(model1)
+            m1 = load_yolo(model1)
             res1 = m1(img, conf=threshold)
             img1 = res1[0].plot()
 
@@ -336,7 +351,7 @@ def detection_page():
         json_B = []
 
         if model2 != "CFINet":
-            m2 = YOLO(model2)
+            m2 = load_yolo(model2)
             res2 = m2(img, conf=threshold)
 
             for b in res2[0].boxes:
@@ -364,10 +379,10 @@ def detection_page():
                             "bbox": [x1,y1,x2,y2]
                         })
 
-        # 🔥 FILTER (IMPORTANT)
+        #  FILTER (IMPORTANT)
         json_B_filtered = filter_new(json_A, json_B)
 
-        # 🔥 DRAW ONLY NEW OBJECTS
+        #  DRAW ONLY NEW OBJECTS
         img2 = img.copy()
         for obj in json_B_filtered:
             x1,y1,x2,y2 = obj["bbox"]
@@ -410,7 +425,7 @@ def detection_page():
                 row["Conf 1"] = ""
 
         # Model 2
-            if i < len(json_B_filtered):   # 👉 in hybrid use json_B
+            if i < len(json_B_filtered):   #  in hybrid use json_B
                 row["Model 2"] = model2_name
                 row["Class 2"] = json_B_filtered[i]["class"]
                 row["Conf 2"] = round(json_B_filtered[i]["confidence"], 3)
@@ -464,7 +479,7 @@ def hybrid_page():
 
         # -------- MODEL A --------
         if model1 != "CFINet":
-            m1 = YOLO(model1)
+            m1 = load_yolo(model1)
             res1 = m1(img, conf=threshold)
 
             for b in res1[0].boxes:
@@ -492,7 +507,7 @@ def hybrid_page():
 
         # -------- MODEL B --------
         if model2 != "CFINet":
-            m2 = YOLO(model2)
+            m2 = load_yolo(model2)
             res2 = m2(img, conf=threshold)
 
             for b in res2[0].boxes:
@@ -592,15 +607,15 @@ if st.session_state.logged_in:
         ["Detection", "Hybrid Detection"]
     )
 
-    # 👉 PUSH LOGOUT TO BOTTOM
+    #  PUSH LOGOUT TO BOTTOM
     st.sidebar.markdown("<br><br><br>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
 
-    if st.sidebar.button("🚪 Logout"):
+    if st.sidebar.button(" Logout"):
         st.session_state.logged_in = False
         st.rerun()
 
-    # 👉 PAGE ROUTING
+    #  PAGE ROUTING
     if page == "Detection":
         detection_page()
     elif page == "Hybrid Detection":
